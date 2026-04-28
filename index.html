@@ -834,11 +834,19 @@
 
 <!-- Tesseract.js for on-device OCR -->
 <script src="https://unpkg.com/tesseract.js@5.1.0/dist/tesseract.min.js"></script>
-<!-- pdf-parse v2 (browser ESM) — pure JS PDF parser with structured table extraction -->
+<!-- pdf-parse v2 (browser ESM build) — pure-JS PDF parser with structured table extraction -->
 <script type="module">
-  import { PDFParse } from 'https://cdn.jsdelivr.net/npm/pdf-parse@2.4.5/dist/pdf-parse/esm/index.js';
-  window.PDFParse = PDFParse;
-  window.dispatchEvent(new Event('pdfparse-ready'));
+  try {
+    const { PDFParse } = await import('https://cdn.jsdelivr.net/npm/pdf-parse@2.4.5/dist/pdf-parse/web/pdf-parse.es.js');
+    // Worker MUST be set explicitly for browser builds
+    PDFParse.setWorker('https://cdn.jsdelivr.net/npm/pdf-parse@2.4.5/dist/pdf-parse/web/pdf.worker.min.mjs');
+    window.PDFParse = PDFParse;
+    window.dispatchEvent(new Event('pdfparse-ready'));
+  } catch (err) {
+    console.error('pdf-parse failed to load:', err);
+    window.__pdfParseLoadError = err;
+    window.dispatchEvent(new Event('pdfparse-failed'));
+  }
 </script>
 
 <script>
@@ -1341,11 +1349,18 @@ async function handlePdf(file) {
   // Wait for the pdf-parse module to finish loading if it hasn't yet
   if (!window.PDFParse) {
     ocrStatus.textContent = 'Loading PDF library…';
-    await new Promise((resolve, reject) => {
-      const t = setTimeout(() => reject(new Error('PDF library load timeout')), 15000);
-      window.addEventListener('pdfparse-ready', () => { clearTimeout(t); resolve(); }, { once: true });
-    }).catch(err => { ocrStatus.textContent = err.message; });
-    if (!window.PDFParse) return;
+    const loadResult = await new Promise((resolve) => {
+      const t = setTimeout(() => resolve({ ok: false, reason: 'timeout' }), 20000);
+      window.addEventListener('pdfparse-ready', () => { clearTimeout(t); resolve({ ok: true }); }, { once: true });
+      window.addEventListener('pdfparse-failed', () => { clearTimeout(t); resolve({ ok: false, reason: 'load-error' }); }, { once: true });
+    });
+    if (!loadResult.ok || !window.PDFParse) {
+      const err = window.__pdfParseLoadError;
+      const detail = err ? (err.message || err.toString()) : 'CDN may be blocked or offline';
+      ocrStatus.textContent = `PDF library failed to load: ${detail}`;
+      console.error('PDF library load failure:', err);
+      return;
+    }
   }
 
   const buf = await file.arrayBuffer();
